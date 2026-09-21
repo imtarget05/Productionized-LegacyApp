@@ -10,7 +10,15 @@ RUN npm ci --omit=dev
 # STAGE 2: Production Image (Tối ưu bảo mật và dung lượng)
 FROM node:22-alpine
 WORKDIR /app
-# Chạy app dưới quyền user không phải root (Best Practice DevOps)
+# Phase 6B security gate: this is a RUNTIME image for `node server.js` — the
+# package manager is a build-time tool only. Removing npm/npx deletes npm's
+# bundled toolchain (tar, pacote, sigstore, brace-expansion…) which accounted
+# for every remaining HIGH/CRITICAL finding in the image scan, and shrinks the
+# attack surface of the shipped artefact.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx \
+    && node --version
+# Run as non-root (Best Practice DevOps)
 USER node
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node src/ ./
