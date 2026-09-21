@@ -84,3 +84,7 @@ Kubernetes desired state (deployed by ArgoCD from Phase 7, not by CI):
 - Terraform ở đây mô tả Web App for Containers (legacy deploy target). Từ Phase 7
   workload chạy trên AKS qua GitOps; giữ nguyên Terraform như tài liệu lịch sử,
   không xoá (đổi target là quyết định của Phase 7).
+
+> Docs-only test (Phase 6B STEP 10): this commit touches documentation only.
+> Expected: CI runs the quality checks, but NO new legacy-app image is pushed
+> and the GitOps overlay SHA does not move.
