@@ -1,90 +1,246 @@
-name: "Productionize Legacy App CI/CD"
+name: "Productionized Legacy App CI"
+
+# Phase 6B: P02 to the same release contract as P01 before Phase 7/AKS deploys it.
+# Legacy source → tests → real security gate → immutable SHA image → the SAME
+# portfolio ACR (acrflashsalep6) → GitOps manifest pinned to SHA.
+#
+# Jobs:
+#   test-and-scan       npm ci + npm test + Trivy fs (secret/HIGH+ vuln blocks)
+#   docker-build-scan   build legacy-app image, Trivy image scan (HIGH+ blocks)
+#   sonarqube           JS analysis + quality gate (needs SONAR_TOKEN; skipped
+#                       with an explicit message until configured — never faked)
+#   release-push        main only, after the gate: OIDC → ACR push <sha> → digest verify
+#   gitops-update       pin infrastructure/kubernetes/overlays/prod newTag → bot commit
+#   ci-gate             single aggregate check for branch protection
 
 on:
   push:
     branches: [main]
-    paths: ['02-Productionized-LegacyApp/**']
   pull_request:
-    paths: ['02-Productionized-LegacyApp/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  IMAGE: legacy-inventory-worker
+  IMAGE: legacy-app
 
 jobs:
   test-and-scan:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+      - name: Install and test (smoke suite, built-in node:test)
+        working-directory: src
+        run: |
+          npm ci --omit=dev
+          npm test
+      # Real gate (not advisory exit-code 0): secrets + known HIGH+ CVEs fail the PR.
+      # Local TF state (*.tfstate*) is never committed; the skip keeps the scan
+      # deterministic for machines that still hold one locally.
+      - name: Trivy fs — secrets and vulnerabilities (HIGH+ blocks)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ./src
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: false
+      - name: Trivy config — Dockerfile and repo IaC
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          severity: HIGH,CRITICAL
+          exit-code: '1'
 
-    - uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    # 1. Smoke tests (built-in node:test) — catch regressions before container work.
-    - name: Unit smoke tests
-      working-directory: 02-Productionized-LegacyApp/src
-      run: |
-        npm ci --omit=dev
-        npm test
-
-    # 2. DevOps Best Practice: quét lỗ hổng bảo mật của code & dependencies cũ
-    - name: Run Trivy vulnerability scanner on Repo
-      uses: aquasecurity/trivy-action@0.28.0
-      with:
-        scan-type: 'fs'
-        format: 'table'
-        exit-code: '0'
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build Docker Image
-      uses: docker/build-push-action@v6
-      with:
-        context: 02-Productionized-LegacyApp
-        push: false
-        load: true
-        tags: ${{ env.IMAGE }}:ci
-
-    # 3. DevOps Best Practice: quét lỗ hổng Docker Image
-    - name: Scan Docker Image
-      uses: aquasecurity/trivy-action@0.28.0
-      with:
-        image-ref: ${{ env.IMAGE }}:ci
-        format: 'table'
-        exit-code: '0'
-
-  deploy:
-    # Chỉ deploy khi push main và khi secrets đã cấu hình.
-    needs: test-and-scan
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  docker-build-scan:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build legacy-app image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: legacy-app:ci-${{ github.sha }}
+      - name: Trivy image scan — legacy-app (HIGH+ blocks)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: legacy-app:ci-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+  detect-changes:
+    # Docs-only commits must not mint a new runtime image (P06B-STEP-10).
+    # Computed with changed-files against the push base so the release jobs can
+    # skip without re-running the expensive quality gates.
+    runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect runtime vs docs-only change
+        id: filter
+        run: |
+          BASE="${{ github.event.before }}"
+          [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] || BASE="HEAD~1"
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          echo "changed files:"; echo "$CHANGED"
+          if echo "$CHANGED" | grep -qvE '^(README\.md$|docs/|.*\.md$)'; then
+            echo "runtime=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "runtime=false" >> "$GITHUB_OUTPUT"
+          fi
 
-    - name: Login to Azure Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ secrets.ACR_LOGIN_SERVER }}
-        username: ${{ secrets.ACR_USERNAME }}
-        password: ${{ secrets.ACR_PASSWORD }}
+  sonarqube:
+    # Same contract as P01: explicit repo variable gate. SonarCloud refuses CI
+    # analysis while Automatic Analysis is enabled for the project (org/UI
+    # setting the API cannot change), so this job is skipped — never faked —
+    # until an operator flips it and sets vars.SONAR_ENABLED=true. Needs
+    # SONAR_TOKEN; uses the P02 project key imtarget05_Productionized-LegacyApp.
+    if: vars.SONAR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+      - name: SonarQube analysis + quality gate (JS)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        working-directory: src
+        run: |
+          npm ci --omit=dev
+          npx -y sonarqube-scanner \
+            -Dsonar.projectKey=imtarget05_Productionized-LegacyApp \
+            -Dsonar.organization=imtarget05 \
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=600
 
-    - name: Build and Push Image
-      uses: docker/build-push-action@v6
-      with:
-        context: 02-Productionized-LegacyApp
-        push: true
-        tags: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:latest
+  release-push:
+    needs: [ci-gate, detect-changes]
+    # Publish only artefact-changing commits; docs-only commits run CI checks
+    # but must NOT mint a new runtime image or move the GitOps SHA (P06B-STEP-10).
+    # workflow_dispatch can still force a release when explicitly requested.
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+        needs.detect-changes.outputs.runtime == 'true'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.tags.outputs.legacy }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login (OIDC — same identity model as P01, no client secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Log in to the portfolio ACR
+        run: az acr login --name ${{ vars.ACR_NAME }}
+      - name: Compute immutable tag
+        id: tags
+        run: |
+          echo "legacy=${{ vars.ACR_LOGIN_SERVER }}/legacy-app:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push legacy-app:<sha>
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.legacy }}
+      - name: Verify the pushed tag resolves to a digest
+        id: push
+        run: |
+          DIGEST=$(az acr manifest list-metadata --registry ${{ vars.ACR_NAME }} \
+            --name legacy-app --query "[?tags[0]=='${GITHUB_SHA}'].digest | [0]" -o tsv)
+          echo "legacy-app ${GITHUB_SHA} → ${DIGEST}"
+          [ -n "$DIGEST" ] && [ "$DIGEST" != "None" ] || { echo "legacy-app:$GITHUB_SHA not found in ACR"; exit 1; }
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Summary
+        run: |
+          echo "### Released artifact" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ steps.tags.outputs.legacy }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- legacy-app digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Azure Login
-      uses: azure/login@v2
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+  gitops-update:
+    needs: release-push
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # Git state is the desired runtime state (same ownership contract as P01:
+      # CI builds, Git holds desired state, nothing kubectl-applied by CI).
+      - name: Pin the prod overlay to the released SHA
+        run: |
+          python3 - infrastructure/kubernetes/overlays/prod/kustomization.yaml \
+                   "${{ vars.ACR_LOGIN_SERVER }}" "${GITHUB_SHA}" <<'PY'
+          import sys, re
+          path, acr, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+          text = open(path).read()
+          text = re.sub(r'(?m)^(\s*- name: )\S*/legacy-app',
+                        lambda m: m.group(1) + acr + '/legacy-app', text)
+          text = re.sub(r'(?m)^(\s*newTag: ).*$',
+                        lambda m: m.group(1) + sha, text)
+          open(path, 'w').write(text)
+          PY
+          git diff -- infrastructure/kubernetes/overlays/prod/kustomization.yaml
+      - name: Commit and push the GitOps bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add infrastructure/kubernetes/overlays/prod/kustomization.yaml
+          if git diff --cached --quiet; then
+            echo "no change (already pinned to ${GITHUB_SHA})"
+          else
+            git commit -m "gitops: pin prod overlay to legacy-app:${GITHUB_SHA}"
+            git push
+          fi
+      - name: Summary
+        run: |
+          echo "### GitOps" >> "$GITHUB_STEP_SUMMARY"
+          echo "Desired state committed: prod overlay → \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
 
-    # Web App đã được khai báo bằng Terraform; job này chỉ restart để pull image mới.
-    - name: Restart Web App to pull latest image
-      run: az webapp restart --name app-legacy-inventory-sync --resource-group rg-legacy-apps
-
+  ci-gate:
+    needs:
+      - test-and-scan
+      - docker-build-scan
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Aggregate gate
+        run: |
+          echo "test-and-scan      = ${{ needs.test-and-scan.result }}"
+          echo "docker-build-scan  = ${{ needs.docker-build-scan.result }}"
+          fail=0
+          [ "${{ needs.test-and-scan.result }}"     = "success" ] || { echo "GATE FAIL: test-and-scan";     fail=1; }
+          [ "${{ needs.docker-build-scan.result }}" = "success" ] || { echo "GATE FAIL: docker-build-scan"; fail=1; }
+          exit $fail

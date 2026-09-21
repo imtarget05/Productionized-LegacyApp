@@ -1,11 +1,14 @@
 # STAGE 1: Build & Dependencies (npm ci needs the committed package-lock.json)
-FROM node:18-alpine AS builder
+# Phase 6B: Node 22 LTS (active LTS; 18 is EOL since 2025-04-30) on a current
+# Alpine. The old node:18-alpine carried 19 HIGH + 2 CRITICAL OS CVEs
+# (openssl heap overflow, busybox) with no published fix on that line.
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY src/package*.json ./
 RUN npm ci --omit=dev
 
 # STAGE 2: Production Image (Tối ưu bảo mật và dung lượng)
-FROM node:18-alpine
+FROM node:22-alpine
 WORKDIR /app
 # Chạy app dưới quyền user không phải root (Best Practice DevOps)
 USER node

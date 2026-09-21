@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: legacy-prod
+
+resources:
+  - ../../base
+
+images:
+  # Exactly one line of deployment-relevant truth in this file: the released
+  # image. `gitops-update` (CI) rewrites ONLY `newTag` — never flip this by
+  # hand, and never to `latest`. Rollback = revert the GitOps commit.
+  - name: acrflashsalep6.azurecr.io/legacy-app
+    newTag: PLACEHOLDER_SHA_SET_BY_CI
+
+commonLabels:
+  env: prod

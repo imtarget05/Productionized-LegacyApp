@@ -58,7 +58,29 @@ curl localhost:3000/health
    `AZURE_CREDENTIALS`.
 3. Push code → CI test + scan + push image → restart Web App để pull image mới.
 
+## Release contract (Phase 6B)
+
+P02 releases on the same contract as P01 — see `docs/adr-release-engineering.md`:
+
+```text
+npm ci → npm test → Trivy fs (secret + HIGH+ vuln, blocking) → Trivy config (IaC, blocking)
+      → docker build → Trivy image (HIGH+ blocking) → OIDC login → ACR push legacy-app:<git-sha>
+      → tag→digest verified → GitOps overlay newTag pinned → bot commit
+```
+
+- Registry: **`acrflashsalep6.azurecr.io`** (the shared portfolio ACR; repository `legacy-app`).
+- Deployment source: `legacy-app:<git-sha>` — never `latest`.
+- Rollback: revert the `gitops: pin prod overlay to legacy-app:<sha>` commit (no rebuild).
+- Docs-only commits run CI but publish **no** image and move **no** GitOps SHA.
+- Sonar quality gate is wired but currently `SKIPPED` (SonarCloud automatic
+  analysis mode) — reported honestly, never faked.
+
+Kubernetes desired state (deployed by ArgoCD from Phase 7, not by CI):
+`infrastructure/kubernetes/base` + `infrastructure/kubernetes/overlays/prod`.
+
 ## Lưu ý
 - Backend `azurerm` cho Terraform state đang được comment — bật sau khi tạo Storage
   Account backend.
-- ACR `sharedacr` cần `admin_enabled = true` (dùng `admin_username/password`).
+- Terraform ở đây mô tả Web App for Containers (legacy deploy target). Từ Phase 7
+  workload chạy trên AKS qua GitOps; giữ nguyên Terraform như tài liệu lịch sử,
+  không xoá (đổi target là quyết định của Phase 7).

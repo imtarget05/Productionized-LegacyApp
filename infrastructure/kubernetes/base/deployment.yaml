@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app
+  labels:
+    app: legacy-app
+    project: legacy-inventory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app
+  template:
+    metadata:
+      labels:
+        app: legacy-app
+    spec:
+      # Phase 6B: declared non-root + hardened runtime (same bar as P01).
+      # The image already runs as `node` (uid 1000); kubelet enforces it here.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: legacy-app
+          # image + newTag are owned by the prod overlay (GitOps pins the SHA);
+          # ArgoCD (Phase 7) reconciles whatever the overlay says.
+          image: acrflashsalep6.azurecr.io/legacy-app:PLACEHOLDER_SHA_SET_BY_CI
+          ports:
+            - containerPort: 3000
+          # Container-level hardening (Trivy KSV-0014/KSV-0118 checks these here).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: PORT
+              value: "3000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "0.5"
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
