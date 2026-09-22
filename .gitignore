@@ -5,3 +5,7 @@ npm-debug.log*
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+
+# Python bytecode from repo scripts (never commit)
+__pycache__/
+*.pyc

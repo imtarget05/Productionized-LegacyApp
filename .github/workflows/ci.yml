@@ -7,6 +7,7 @@ name: "Productionized Legacy App CI"
 # Jobs:
 #   test-and-scan       npm ci + npm test + Trivy fs (secret/HIGH+ vuln blocks)
 #   docker-build-scan   build legacy-app image, Trivy image scan (HIGH+ blocks)
+#   manifest-validation render prod overlay, assert deployable (P01 7C lesson)
 #   sonarqube           JS analysis + quality gate (needs SONAR_TOKEN; skipped
 #                       with an explicit message until configured — never faked)
 #   release-push        main only, after the gate: OIDC → ACR push <sha> → digest verify
@@ -229,10 +230,22 @@ jobs:
           echo "### GitOps" >> "$GITHUB_STEP_SUMMARY"
           echo "Desired state committed: prod overlay → \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
 
+  manifest-validation:
+    runs-on: ubuntu-latest
+    # Renders the prod overlay and asserts the OUTPUT is deployable. P02 learned
+    # this the P01 way: a green release-push coexisted with a render that could
+    # silently skip the image override (base/overlay name coupling), so the
+    # manifest is rendered and asserted, not just built.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render and validate the prod overlay
+        run: ./scripts/validate-manifests.sh
+
   ci-gate:
     needs:
       - test-and-scan
       - docker-build-scan
+      - manifest-validation
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -240,7 +253,9 @@ jobs:
         run: |
           echo "test-and-scan      = ${{ needs.test-and-scan.result }}"
           echo "docker-build-scan  = ${{ needs.docker-build-scan.result }}"
+          echo "manifest-validation = ${{ needs.manifest-validation.result }}"
           fail=0
           [ "${{ needs.test-and-scan.result }}"     = "success" ] || { echo "GATE FAIL: test-and-scan";     fail=1; }
           [ "${{ needs.docker-build-scan.result }}" = "success" ] || { echo "GATE FAIL: docker-build-scan"; fail=1; }
+          [ "${{ needs.manifest-validation.result }}" = "success" ] || { echo "GATE FAIL: manifest-validation"; fail=1; }
           exit $fail
