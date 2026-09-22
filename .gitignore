@@ -9,3 +9,4 @@ npm-debug.log*
 # Python bytecode from repo scripts (never commit)
 __pycache__/
 *.pyc
+node_modules
