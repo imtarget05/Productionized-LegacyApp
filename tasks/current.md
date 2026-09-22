@@ -26,7 +26,7 @@ infrastructure from this repo.
 
 ## Next: Phase 7D — deploy to shared AKS via GitOps
 
-**P02 offline readiness gate: DONE 2026-09-22** (commit pending push):
+**P02 offline readiness gate: DONE + CI-verified 2026-09-22** (GitHub run 35740251227, conclusion success — all jobs green incl. the new manifest-validation):
 `scripts/validate-manifests.sh` + `scripts/test-validate-manifests.py`
 (**ALL 9 mutations caught** — PIN SHA, latest, placeholder, wrong-registry,
 root runtime, readOnlyRootFilesystem removed, resources removed, probe
