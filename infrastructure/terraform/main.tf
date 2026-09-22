@@ -1,3 +1,25 @@
+# =============================================================================
+# HISTORICAL / SUPERSEDED — DO NOT APPLY
+# =============================================================================
+# This root is the pre-AKS "Web App for Containers" blueprint that shipped with
+# the original legacy app. It was NEVER applied and has no state. It is kept
+# only as brownfield evidence of what P02 started from (see
+# docs/evidence/release/phase6b-release-engineering.md, "Terraform" row).
+#
+# It is also actively wrong for the current architecture:
+#   - data source points at "sharedacr" in resource group "rg-shared-infra";
+#     neither exists in the subscription (verified 2026-09-21, az resource list).
+#   - it reads ACR admin_username/admin_password, i.e. it requires ACR
+#     admin_enabled = true. The real registry (acrflashsalep6) has
+#     adminUserEnabled = false, and private pull works through the AKS kubelet
+#     identity's AcrPull role. Running this would push the platform toward a
+#     credential-based pull path we deliberately removed.
+#   - docker_image_name uses a mutable ":latest" tag, which ADR-011 forbids.
+#
+# P03 (AKS-SRE-Platform) owns all shared Azure/AKS infrastructure. P02 deploys
+# through GitOps manifests in infrastructure/kubernetes/ only.
+# =============================================================================
+
 terraform {
   required_version = ">= 1.5"
   required_providers {
@@ -75,7 +97,7 @@ resource "azurerm_linux_web_app" "app" {
   }
 
   tags = {
-    project  = "02-productionized-legacy-app"
+    project    = "02-productionized-legacy-app"
     managed_by = "terraform"
   }
 }

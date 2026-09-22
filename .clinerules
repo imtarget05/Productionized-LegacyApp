@@ -1,0 +1,14 @@
+# .clinerules — P02 no-conflict gate
+
+1. Plans read-only (không sửa khi chưa được yêu cầu):
+   - docs/plan-p02-phase4-gate.md
+   - ../FlashSale-Backend/docs/plan-3repo-roadmap-phase4-11.md
+
+2. Ownership: Phase 4 gate P02 (B1-B5, A1-A7) do build orchestrator giữ.
+   Cline chỉ làm khi user giao task rõ ràng.
+
+3. Cấm khi chưa có task:
+   - Sửa .github/workflows/ci.yml paths, Dockerfile, Terraform state
+   - Claim DONE khi thiếu evidence (npm test, docker build/run)
+
+4. Khi làm: đọc AGENTS.md + plan gate trước, ghi evidence vào docs/evidence/.

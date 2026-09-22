@@ -1,90 +1,42 @@
-# Productionized Legacy App — Legacy Inventory Worker
+# Productionized Legacy Application (DevSecOps)
 
-Câu chuyện dự án: nhận một "legacy" Node.js worker nhỏ và **productionize** nó —
-không viết lại business logic, mà chuẩn hóa cách nó chạy: container an toàn, pipeline
-quét lỗ hổng, và hạ tầng khai báo bằng Terraform.
+[![Node.js](https://img.shields.io/badge/Node.js-Express-339933?logo=nodedotjs)](https://nodejs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED?logo=docker)](https://docker.com/)
+[![Trivy](https://img.shields.io/badge/Trivy-Security-008080)](https://aquasecurity.github.io/trivy/)
+[![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI/CD-2088FF?logo=github-actions)](https://github.com/features/actions)
 
-## Cấu trúc thư mục (layered)
+A portfolio project demonstrating practical **Brownfield DevSecOps** and **Release Engineering**. 
 
-```
-src/
-├── server.js              Entry point: listen + graceful shutdown (SIGTERM → drain)
-├── app.js                 Composition root: wiring middleware + routes (không business logic)
-├── routes/                HTTP layer: health.js, sync.js (chỉ mapping request/response)
-├── services/              Business layer: inventoryService.js (logic sync tồn kho)
-├── middleware/            Cross-cutting: structured JSON logging, 404, error handler
-└── test/                  Smoke tests (node:test) — require app.js, không mở port thật
-Dockerfile                 Multi-stage, non-root, HEALTHCHECK
-infrastructure/terraform/  Web App for Containers + ACR pull credentials
-```
+The premise: I inherited a "legacy" Node.js inventory application. Instead of rewriting the business logic (which works), my task was to "productionize" how it builds, runs, and deploys—transforming it from a fragile script into a secure, observable, and immutable release artifact.
 
-Luồng phụ thuộc: `routes → services` và `middleware → (routes)`; entry point (`server.js`)
-là nơi duy nhất mở socket. Business logic không nằm trong route handler.
+## 🚀 Engineering Highlights
 
-## Chuẩn hóa đã áp dụng
+- **Containerization Hygiene:** Introduced a multi-stage Docker build resulting in a minimal, secure image running as a **non-root user**. Added explicit `HEALTHCHECK`, structured JSON logging, and graceful shutdown (draining connections on `SIGTERM`).
+- **DevSecOps Blocking Gate:** Converted Trivy from a mere advisory tool into a strict **blocking CI gate**. The pipeline halts on Critical/High CVEs in the filesystem, IaC, and container image, enforcing a baseline security policy before merging.
+- **Release Contract:** Implemented a robust GitHub Actions pipeline leveraging **Azure OIDC** for secretless authentication. Images are built immutably as `legacy-app:<git-sha>`, pushed to Azure Container Registry (ACR) with digest verification, and automatically pinned via GitOps.
+- **Smart CI Executions:** Added runtime change detection to ensure that documentation-only commits (like updating this README) do not trigger expensive application image builds.
 
-| Hạng mục | Best Practice | Ở đâu |
-|---|---|---|
-| Container | Multi-stage build, non-root (`USER node`), HEALTHCHECK | `Dockerfile` |
-| Dependencies | `npm ci --omit=dev` + lock file; loại bỏ `pg`/`redis` không dùng (thu nhỏ attack surface) | `src/package.json` |
-| Runtime | Graceful shutdown (SIGTERM → drain), JSON structured logs, JSON 404/error | `src/server.js`, `src/middleware/` |
-| Kiến trúc | Layered folders: entry point → composition root → routes → services | `src/` |
-| Tests | Smoke tests với `node:test` (không thêm dependency) | `src/test/` |
-| CI | npm test → Trivy scan (fs + image) → build | `.github/workflows/ci.yml` |
-| CD | Push ACR + restart Web App (image pull) | `.github/workflows/ci.yml` (job `deploy`) |
-| IaC | Web App for Containers + health probe + log retention | `infrastructure/terraform/` |
+## 🛠️ The Pipeline
 
-## Chạy local
-
-```bash
-cd src && npm ci --omit=dev
-npm start                 # http://localhost:3000/health
-npm test                  # 3 smoke tests
+```mermaid
+flowchart LR
+    Commit[Git Commit] --> Build[Docker Build]
+    Build --> Scan[Trivy Vulnerability Scan]
+    Scan -- Pass --> Push[OIDC Push to ACR]
+    Push --> Tag[GitOps Image Pinning]
+    Scan -- Fail (CRITICAL/HIGH) --> Block((Pipeline Fails))
 ```
 
-## Chạy container
-
-```bash
-docker build -t legacy-inventory-worker .
-docker run -p 3000:3000 legacy-inventory-worker
-curl localhost:3000/health
-```
-
-## Deploy lên Azure
-
-1. `cd infrastructure/terraform && terraform init && terraform apply`
-   (tạo Resource Group + Service Plan + Web App; ACR dùng chung `sharedacr`).
-2. Cấu hình GitHub secrets: `ACR_LOGIN_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD`,
-   `AZURE_CREDENTIALS`.
-3. Push code → CI test + scan + push image → restart Web App để pull image mới.
-
-## Release contract (Phase 6B)
-
-P02 releases on the same contract as P01 — see `docs/adr-release-engineering.md`:
+## 📂 Project Structure
 
 ```text
-npm ci → npm test → Trivy fs (secret + HIGH+ vuln, blocking) → Trivy config (IaC, blocking)
-      → docker build → Trivy image (HIGH+ blocking) → OIDC login → ACR push legacy-app:<git-sha>
-      → tag→digest verified → GitOps overlay newTag pinned → bot commit
+src/
+├── server.js              # Entry point: listen + graceful shutdown
+├── app.js                 # Composition root (wiring, no logic)
+├── routes/                # HTTP layer (health checks, mapping)
+├── services/              # Legacy Business logic
+├── middleware/            # Error handling, JSON logging
+└── test/                  # Node.js smoke tests
+Dockerfile                 # Multi-stage, non-root, minimal surface
+.github/workflows/         # CI/CD and Trivy DevSecOps pipelines
 ```
-
-- Registry: **`acrflashsalep6.azurecr.io`** (the shared portfolio ACR; repository `legacy-app`).
-- Deployment source: `legacy-app:<git-sha>` — never `latest`.
-- Rollback: revert the `gitops: pin prod overlay to legacy-app:<sha>` commit (no rebuild).
-- Docs-only commits run CI but publish **no** image and move **no** GitOps SHA.
-- Sonar quality gate is wired but currently `SKIPPED` (SonarCloud automatic
-  analysis mode) — reported honestly, never faked.
-
-Kubernetes desired state (deployed by ArgoCD from Phase 7, not by CI):
-`infrastructure/kubernetes/base` + `infrastructure/kubernetes/overlays/prod`.
-
-## Lưu ý
-- Backend `azurerm` cho Terraform state đang được comment — bật sau khi tạo Storage
-  Account backend.
-- Terraform ở đây mô tả Web App for Containers (legacy deploy target). Từ Phase 7
-  workload chạy trên AKS qua GitOps; giữ nguyên Terraform như tài liệu lịch sử,
-  không xoá (đổi target là quyết định của Phase 7).
-
-> Docs-only test (Phase 6B STEP 10): this commit touches documentation only.
-> Expected: CI runs the quality checks, but NO new legacy-app image is pushed
-> and the GitOps overlay SHA does not move.
