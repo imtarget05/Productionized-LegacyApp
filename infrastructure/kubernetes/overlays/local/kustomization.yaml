@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# LOCAL kind overlay (local-platform). Prod overlay untouched: it keeps the
+# immutable-SHA pin owned by CI/GitOps.
+namespace: legacyapp
+
+resources:
+  - ../../base
+  # L8 — shared north-south route (GitOps-managed by the legacyapp Application).
+  - httproute.yaml
+
+images:
+  # Built from this repo's Dockerfile for linux/arm64 and loaded into every
+  # kind node via AKS-SRE-Platform/local/kind/load-image.sh — no registry,
+  # no ACR dependency. Tag `local` is deliberate mutable-local-only semantics;
+  # prod SHA immutability lives in overlays/prod.
+  - name: acrflashsalep6.azurecr.io/legacy-app
+    newName: legacy-app
+    newTag: local
+
+patches:
+  # Honest local pull policy: the image is preloaded on the nodes, so any
+  # registry pull attempt would be a lie (and would fail — no ACR cred).
+  - target:
+      kind: Deployment
+      name: legacy-app
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+
+commonLabels:
+  env: local
