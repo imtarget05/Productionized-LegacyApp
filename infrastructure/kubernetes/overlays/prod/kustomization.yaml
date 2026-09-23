@@ -11,7 +11,7 @@ images:
   # image. `gitops-update` (CI) rewrites ONLY `newTag` — never flip this by
   # hand, and never to `latest`. Rollback = revert the GitOps commit.
   - name: acrflashsalep6.azurecr.io/legacy-app
-    newTag: 41ecc9a5939c003850b59ae2f689ecc054f7a3a8
+    newTag: 9461c7a1e08294ce4eb3e330a332e41aeb6829ab
 
 commonLabels:
   env: prod
